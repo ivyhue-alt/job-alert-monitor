@@ -45,7 +45,7 @@ NON_NYNJ_US = ["san francisco","redwood city","seattle","denver","boston","austi
 GREENHOUSE = ["anthropic","scaleai","labelbox","turing","invisibletech","snorkelai",
     "remotasks","invisible","databricks","datadog"]
 ASHBY = ["mercor","openai","cohere"]
-LEVER = []
+LEVER = ["anthropic","ramp","notion","figma","plaid","scaleai"]
 WORKDAY = [
     "https://pru.wd5.myworkdayjobs.com/Careers",
     "https://pfizer.wd1.myworkdayjobs.com/PfizerCareers",
@@ -131,15 +131,26 @@ def collect():
                 "company": j.company, "location": (j.location or "")[:70],
                 "posted": j.posted_at.strftime("%Y-%m-%d") if j.posted_at else "?",
                 "url": str(j.url)}
-    def harvest(scraper, slug, kind, **kw):
-        try:
-            jobs = scraper(slug, **kw).fetch()
-            if not jobs:
-                print(f"[WARN] {kind} {slug}: 0"); return
-            print(f"[ok] {kind} {slug}: {len(jobs)}")
-            for j in jobs: keep(j)
-        except Exception as e:
-            print(f"[skip] {kind} {slug}: {str(e)[:60]}")
+    def harvest(scraper, slug, kind, attempts=3, **kw):
+        # A single transient failure used to discard an entire source: one
+        # Workday endpoint returned 604 postings one run and raised on the
+        # next, and the bare except made that look identical to an empty
+        # board. Retry with backoff, and log an exhausted source as FAIL so
+        # a real outage is distinguishable from a source with no matches.
+        for n in range(1, attempts + 1):
+            try:
+                jobs = scraper(slug, **kw).fetch()
+                if not jobs:
+                    print(f"[WARN] {kind} {slug}: 0"); return
+                print(f"[ok] {kind} {slug}: {len(jobs)}")
+                for j in jobs: keep(j)
+                return
+            except Exception as e:
+                if n < attempts:
+                    print(f"[retry {n}/{attempts}] {kind} {slug}: {type(e).__name__}")
+                    time.sleep(5 * n)
+                else:
+                    print(f"[FAIL] {kind} {slug}: {type(e).__name__} {str(e)[:60]}")
     for s in GREENHOUSE: harvest(GreenhouseScraper, s, "gh")
     for s in ASHBY: harvest(AshbyScraper, s, "ashby")
     for s in LEVER: harvest(LeverScraper, s, "lever")
