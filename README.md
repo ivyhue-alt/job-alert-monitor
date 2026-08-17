@@ -28,6 +28,16 @@ Job boards resurface the same postings for weeks and bury relevant ones under vo
 Seeded 291. Confirmed.
 ```
 
+A transient failure, retried and recovered:
+
+```
+[retry 1/3] workday regeneron: ScraperError
+[retry 2/3] workday regeneron: ScraperError
+[ok] workday regeneron: 604
+```
+
+Before retries were added, that source returned 604 postings one run and raised on the next, and a bare `except` logged it identically to an empty board - 604 postings dropped with no signal that anything went wrong.
+
 ~11,000 postings in, 291 matches out — a 2.6% pass rate. Tuning that ratio is the ongoing work: too loose and the alerts stop being read, too tight and the system quietly hides the thing you were watching for.
 
 ## The USAJOBS client
