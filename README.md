@@ -8,7 +8,7 @@ Job boards resurface the same postings for weeks and bury relevant ones under vo
 
 ## Coverage
 
-**ATS platforms:** Greenhouse, Ashby, Workday (Lever supported in code, no active slugs)
+**ATS platforms:** Greenhouse, Ashby, Workday
 **Aggregators:** BuiltIn, TheMuse, RemoteOK, WeWorkRemotely, YCombinator
 **Federal:** USAJOBS, via a custom direct-API client
 

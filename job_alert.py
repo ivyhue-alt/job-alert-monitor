@@ -2,7 +2,7 @@ import json, os, time
 from datetime import datetime, timezone
 import httpx
 from usajobs_public import fetch_public_federal
-from jobhive.scrapers import (GreenhouseScraper, AshbyScraper, LeverScraper,
+from jobhive.scrapers import (GreenhouseScraper, AshbyScraper,
     WorkdayScraper, BuiltInScraper, TheMuseScraper, RemoteOKScraper,
     WeWorkRemotelyScraper, YCombinatorScraper)
 
@@ -45,7 +45,6 @@ NON_NYNJ_US = ["san francisco","redwood city","seattle","denver","boston","austi
 GREENHOUSE = ["anthropic","scaleai","labelbox","turing","invisibletech","snorkelai",
     "remotasks","invisible","databricks","datadog"]
 ASHBY = ["mercor","openai","cohere"]
-LEVER = ["anthropic","ramp","notion","figma","plaid","scaleai"]
 WORKDAY = [
     "https://pru.wd5.myworkdayjobs.com/Careers",
     "https://pfizer.wd1.myworkdayjobs.com/PfizerCareers",
@@ -153,7 +152,6 @@ def collect():
                     print(f"[FAIL] {kind} {slug}: {type(e).__name__} {str(e)[:60]}")
     for s in GREENHOUSE: harvest(GreenhouseScraper, s, "gh")
     for s in ASHBY: harvest(AshbyScraper, s, "ashby")
-    for s in LEVER: harvest(LeverScraper, s, "lever")
     for s in WORKDAY: harvest(WorkdayScraper, s, "workday")
     for name, kw in AGGREGATORS:
         harvest(AGG_MAP[name], "any", f"agg-{name}", **kw)
