@@ -1,0 +1,13 @@
+﻿.env
+.env.*
+!.env.example
+webhook.txt
+seen_jobs.json
+matches.csv
+*.log
+__pycache__/
+*.pyc
+.venv/
+seen_jobs.*
+webhook.txt
+*.bak
