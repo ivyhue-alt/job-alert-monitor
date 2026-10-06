@@ -2,6 +2,7 @@ import json, os, time
 from datetime import datetime, timezone
 import httpx
 from usajobs_public import fetch_public_federal
+from fitscore import hard_gate, llm_verdict_batch
 from jobhive.scrapers import (GreenhouseScraper, AshbyScraper,
     WorkdayScraper, BuiltInScraper, TheMuseScraper, RemoteOKScraper,
     WeWorkRemotelyScraper, YCombinatorScraper)
@@ -14,14 +15,32 @@ MIN_SCORE = 5
 MAX_AGE_DAYS = 30
 STATE = "seen_jobs.json"
 MAX_ALERTS_PER_RUN = 15
+BATCH_SIZE = 12              # jobs per LLM request. The free tier counts
+                             # REQUESTS, so batching is what makes this work:
+                             # 240 jobs = 20 requests, not 240.
+MAX_LLM_CALLS_PER_RUN = 2    # hourly x 24 = 48 requests/day, inside the
+                             # free daily cap. At BATCH_SIZE 12 that is still
+                             # 24 jobs scored per run, 576/day.   # requests, so 20 x 12 = up to 240 jobs per run
+USE_LLM = True
+LEGACY_BACKFILL_PER_RUN = 8  # migrated records were never LLM-scored. Drain a
+                             # few per run instead of 500 in one go.
 
-CORE = ["rlhf","annotation","annotator","data labeling","labeling","human data",
+CORE_AI = ["rlhf","annotation","annotator","data labeling","labeling","human data",
     "preference data","model evaluation","human-in-the-loop","hitl","ai trainer",
-    "model behavior","data operations","content moderation","trust and safety",
-    "red team","quality analyst","training data","human feedback","data quality",
-    "ai engineer","ml engineer","machine learning engineer","data engineer",
-    "platform engineer","backend engineer","applied ai","llm","research engineer",
-    "member of technical staff","pipeline","automation"]
+    "model behavior","content moderation","trust and safety","red team",
+    "training data","human feedback","data quality","llm evaluation",
+    "evaluation lead","applied ai","llm"]
+
+CORE_OPS = ["ai operations","ai program","ai enablement","ai adoption",
+    "data operations","annotation ops","quality manager","quality management",
+    "quality analytics","quality analyst","automation"]
+
+CORE = CORE_AI + CORE_OPS
+# REMOVED from CORE: ai engineer / ml engineer / machine learning engineer /
+# data engineer / platform engineer / backend engineer / research engineer /
+# member of technical staff. Those were scoring +10 on titles that require a
+# production-engineering stack, pushing unreachable roles to the top of the
+# alert queue.
 BROAD = ["program manager","project manager","quality","calibration","workforce",
     "vendor","sla","coordinator","operations manager","evaluation","management analyst","program analyst","quality assurance specialist","health insurance specialist","compliance specialist","health system specialist","program specialist","data analyst"]
 DISQUALIFY = ["accountant","accounting","counsel","attorney","sales","designer",
@@ -88,18 +107,35 @@ def fed_bonus(job):
     cats = (job.raw or {}).get("JobCategory") or []
     codes = [str(c.get("Code","")) for c in cats if isinstance(c, dict)]
     return 12 if any(x in FED_SERIES for x in codes) else 0
-def score(job):
+def score_tracks(job):
+    """Return (ai_points, ops_points). Weights unchanged: a CORE term scores
+    10 in the title and 3 in the description; BROAD scores 3 and 1. BROAD and
+    the federal bonus are added to BOTH tracks rather than split - a program
+    manager title supports an ops match and an AI-ops match equally."""
     t = (job.title or "").lower()
-    if any(d in t for d in DISQUALIFY): return 0
+    if any(x in t for x in DISQUALIFY):
+        return 0, 0
     d = (job.description or "").lower()
-    pts = 0
-    for k in CORE:
-        if k in t: pts += 10
-        elif k in d: pts += 3
-    for k in BROAD:
-        if k in t: pts += 3
-        elif k in d: pts += 1
-    return pts + fed_bonus(job)
+    def pts(words, hi, lo):
+        n = 0
+        for k in words:
+            if k in t: n += hi
+            elif k in d: n += lo
+        return n
+    shared = pts(BROAD, 3, 1) + fed_bonus(job)
+    return pts(CORE_AI, 10, 3) + shared, pts(CORE_OPS, 10, 3) + shared
+
+def track_of(ai, ops):
+    """BOTH is the strongest signal - the role sits in the overlap the resume
+    is actually written for - so it is reported first."""
+    if ai >= MIN_SCORE and ops >= MIN_SCORE: return "BOTH"
+    if ai >= MIN_SCORE: return "AI"
+    if ops >= MIN_SCORE: return "OPS"
+    return None
+
+def score(job):
+    ai, ops = score_tracks(job)
+    return max(ai, ops)
 
 def loc_ok(job):
     l = (job.location or "").lower()
@@ -119,17 +155,28 @@ def too_old(job):
     except Exception:
         return False
 
-def collect():
+def collect(seen_urls):
+    """Gate only. No LLM here - candidates are scored in batches afterwards."""
     hits = {}
     def keep(j):
+        u = str(j.url)
+        if u in seen_urls: return
         if too_old(j): return
         if fed_reject(j): return
-        s = score(j)
-        if loc_ok(j) and s >= MIN_SCORE:
-            hits[str(j.url)] = {"score": s, "title": j.title,
-                "company": j.company, "location": (j.location or "")[:70],
-                "posted": j.posted_at.strftime("%Y-%m-%d") if j.posted_at else "?",
-                "url": str(j.url)}
+        if not loc_ok(j): return
+        ai_s, ops_s = score_tracks(j)
+        s = max(ai_s, ops_s)
+        if s < MIN_SCORE: return
+        blocked = hard_gate(j.title, j.description)
+        if blocked:
+            print(f"[gate] {blocked[:50]:<50} | {(j.title or '')[:45]}")
+            return
+        hits[u] = {"score": s, "ai": ai_s, "ops": ops_s,
+            "track": track_of(ai_s, ops_s), "title": j.title,
+            "company": j.company, "location": (j.location or "")[:70],
+            "posted": j.posted_at.strftime("%Y-%m-%d") if j.posted_at else "?",
+            "url": u, "description": j.description or "",
+            "verdict": "UNSCORED", "reason": "not yet scored", "gap": ""}
     def harvest(scraper, slug, kind, attempts=3, **kw):
         # A single transient failure used to discard an entire source: one
         # Workday endpoint returned 604 postings one run and raised on the
@@ -170,36 +217,155 @@ def send(msg):
 if not DISCORD_WEBHOOK.startswith("https://discord.com/api/webhooks/"):
     print("!! webhook.txt invalid."); raise SystemExit
 
-def save_state(keys):
+def save_state(state):
     """Temp file then atomic replace. A crash mid-write cannot leave
     seen_jobs.json truncated and crash the next run on json.load."""
     tmp = STATE + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(sorted(keys), fh)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
     os.replace(tmp, STATE)
 
-current = collect()
+def new_record(j, alerted):
+    return {"status": "seen", "first_seen": TODAY, "verdict": j["verdict"],
+            "reason": j["reason"], "gap": j.get("gap", ""),
+            "title": j["title"], "company": j["company"],
+            "alerted": alerted, "resume_version": "", "notes": ""}
+
+TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
 first_run = not os.path.exists(STATE)
-seen = set() if first_run else set(json.load(open(STATE)))
+if first_run:
+    seen = {}
+else:
+    seen = json.load(open(STATE, encoding="utf-8"))
+    if isinstance(seen, list):
+        print("!! seen_jobs.json is still a flat list.")
+        print("!! Run: python migrate_state.py seen_jobs.json")
+        raise SystemExit
+
+# Skip re-scoring only jobs that have a REAL verdict. UNSCORED means the API
+# failed or the budget ran out, so those must stay eligible for a retry or
+# they are stuck as UNSCORED forever.
+# Three buckets:
+#   verdict in STRONG/STRETCH/NO -> settled, never re-score
+#   verdict == "UNSCORED"        -> scoring failed, always retry
+#   verdict missing/empty        -> legacy migrated record, never scored.
+#                                   Drain a slice per run to respect quota.
+settled, failed, legacy = set(), set(), []
+for u, r in seen.items():
+    v = r.get("verdict")
+    if v in ("STRONG", "STRETCH", "NO"): settled.add(u)
+    elif v == "UNSCORED":                failed.add(u)
+    else:                                legacy.append(u)
+
+legacy.sort()
+backfill = set(legacy[:LEGACY_BACKFILL_PER_RUN])
+skip = settled | (set(legacy) - backfill)
+
+if failed or legacy:
+    print(f"[queue] {len(failed)} failed-retry, {len(legacy)} legacy "
+          f"({len(backfill)} this run), {len(settled)} settled")
+
+current = collect(skip)
+from collections import Counter
+print("[tracks] " + ", ".join(f"{k}:{v}" for k, v in Counter(
+    (j.get("track") or "none") for j in current.values()).most_common()))
+
+
+def score_in_batches(cand):
+    """Score gate-survivors in batches. Highest keyword score first, so if
+    quota runs out it runs out on the least promising jobs."""
+    if not USE_LLM or not cand:
+        return
+    # BOTH sits in the overlap the resume is written for, so it gets the
+    # capped request budget before single-track jobs.
+    order = sorted(cand, key=lambda u: (0 if cand[u].get("track") == "BOTH"
+                                        else 1, -cand[u]["score"]))
+    budget = MAX_LLM_CALLS_PER_RUN
+    done = 0
+    for i in range(0, len(order), BATCH_SIZE):
+        if budget <= 0:
+            print(f"[budget] request cap reached; {len(order)-done} left UNSCORED")
+            break
+        chunk = order[i:i + BATCH_SIZE]
+        res = llm_verdict_batch([cand[u] for u in chunk])
+        budget -= 1
+        stop = False
+        for u, v in zip(chunk, res):
+            cand[u]["verdict"] = v["verdict"]
+            cand[u]["reason"] = v.get("reason", "")
+            cand[u]["gap"] = v.get("gap", "")
+            if v.get("stop"): stop = True
+        done += len(chunk)
+        ok = sum(1 for u in chunk if cand[u]["verdict"] != "UNSCORED")
+        print(f"[batch] {done}/{len(order)} scored ({ok}/{len(chunk)} ok), "
+              f"{budget} requests left")
+        if stop:
+            print("[quota] daily Gemini quota exhausted - rest left for a later run")
+            break
+
+
+print(f"[gate-pass] {len(current)} candidates to score")
+score_in_batches(current)
+
+# Drop NO verdicts, but remember them so they are never re-scored.
+for u in [u for u, j in current.items() if j["verdict"] == "NO"]:
+    j = current.pop(u)
+    print(f"[no] {j['reason'][:50]:<50} | {(j['title'] or '')[:40]}")
+    seen[u] = {"status": "seen", "first_seen": TODAY, "verdict": "NO",
+               "reason": j["reason"], "gap": "", "title": j["title"],
+               "company": j["company"], "alerted": True,
+               "resume_version": "", "notes": ""}
+
+# description was only needed for scoring; do not persist it
+for j in current.values():
+    j.pop("description", None)
 
 if first_run:
     ok = send(f"Monitor live. {len(current)} roles seeded.")
     if ok:
-        save_state(current.keys())
+        save_state({u: new_record(j, True) for u, j in current.items()})
         print(f"Seeded {len(current)}. Confirmed.")
     else:
         print("Discord FAILED - state not seeded.")
 else:
-    new = [(u, j) for u, j in current.items() if u not in seen]
-    new.sort(key=lambda x: -x[1]["score"])
-    delivered = set()
-    for u, j in new[:MAX_ALERTS_PER_RUN]:
-        if send(f"**{j['title']}**\n{j['company']} | {j['location']} | "
-                f"posted {j['posted']} | score {j['score']}\n{j['url']}"):
-            delivered.add(u)
+    RANK = {"STRONG": 0, "STRETCH": 1, "UNSCORED": 2}
+    TAG = {"STRONG": "\U0001F7E2", "STRETCH": "\U0001F7E1"}
+
+    # Newly scored this run, plus anything scored earlier that never got
+    # alerted because it fell past the per-run cap. Backlog drains without
+    # spending a second API call on it.
+    backlog = [(u, r) for u, r in seen.items() if not r.get("alerted", True)]
+    queue = [(u, j, True) for u, j in current.items()] + \
+            [(u, r, False) for u, r in backlog]
+    queue.sort(key=lambda x: (RANK.get(x[1].get("verdict"), 3),
+                              -x[1].get("score", 0)))
+
+    # Record every newly scored job immediately, alerted or not.
+    for u, j in current.items():
+        prev = seen.get(u, {})
+        rec = new_record(j, prev.get("alerted", False))
+        # never clobber your own tracking on a re-score
+        for f in ("status", "resume_version", "notes", "first_seen"):
+            if prev.get(f): rec[f] = prev[f]
+        seen[u] = rec
+
+    delivered = 0
+    for u, j, is_new in queue[:MAX_ALERTS_PER_RUN]:
+        gap = f"\ngap: {j['gap']}" if j.get("gap") else ""
+        icon = TAG.get(j.get("verdict"), "\u26AA")
+        if send(f"{icon} **{j.get('verdict')}** `[{j.get('track') or '?'}]` - {j.get('title')}\n"
+                f"{j.get('company')} | {j.get('location','')} | "
+                f"posted {j.get('posted','?')}\n"
+                f"{j.get('reason','')}{gap}\n{u}"):
+            seen[u]["alerted"] = True
+            delivered += 1
         time.sleep(1)
-    # Union, not intersect. A scraper that errors drops its jobs from
-    # current; pruning against current forgets them and re-alerts next run.
-    new_state = seen | delivered
-    save_state(new_state)
-    print(f"{len(new)} new, {len(delivered)} delivered.")
+
+    save_state(seen)
+    counts = {}
+    for _, j in current.items():
+        counts[j["verdict"]] = counts.get(j["verdict"], 0) + 1
+    remaining = sum(1 for r in seen.values() if not r.get("alerted", True))
+    print(f"{len(current)} newly scored {counts} | {delivered} alerted | "
+          f"{remaining} queued | {len(seen)} tracked")

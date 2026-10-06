@@ -11,3 +11,4 @@ __pycache__/
 seen_jobs.*
 webhook.txt
 *.bak
+profile.json

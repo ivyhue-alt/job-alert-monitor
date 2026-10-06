@@ -1,0 +1,22 @@
+﻿{
+  "_comment": "EDIT THIS FILE, NOT THE CODE. Everything the scorer knows about the candidate lives here. Be honest in 'lacks' - that is what stops false positives.",
+  "summary": "One paragraph: field, years, the two or three things you are actually known for.",
+  "years_experience": 0,
+  "has": [
+    "Concrete capability, named the way a posting would name it",
+    "Tools and platforms you have operated, not just seen",
+    "Domain exposure that lets you read a posting in that field"
+  ],
+  "lacks": [
+    "Credentials you do not hold",
+    "Systems you have never built or run",
+    "Adjacent-sounding experience you do NOT have - the near-misses matter most"
+  ],
+  "targets": [
+    "Role families worth an alert, in the words postings use"
+  ],
+  "geography": "Where you will work, and whether you will relocate.",
+  "work_types": "Contract, contract-to-hire, full-time; availability.",
+  "notes_for_scorer": "Judge by requirements, not title. CRITICAL: distinguish REQUIRED from PREFERRED. A posting stating it requires something listed in lacks is a NO. The same thing marked preferred, a plus, or nice to have is at worst a STRETCH. Degree language works the same way: a required degree is a hard gate, or relevant experience in lieu of degree is not.",
+  "education": "State the highest completed credential, and whether a required degree should gate or only downgrade to STRETCH."
+}
