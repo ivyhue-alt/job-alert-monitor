@@ -1,5 +1,7 @@
 # job-alert-monitor
 
+[![tests](https://github.com/ivyhue-alt/job-alert-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/ivyhue-alt/job-alert-monitor/actions/workflows/tests.yml)
+
 Scans ~11,000 job postings across 33 sources on an hourly schedule and alerts on the few worth reading. Every posting it rejects, it rejects with a printed reason.
 
 That last part is deliberate. A filter that drops things silently is a filter you can't debug — two real bugs in this repo were found by reading rejection logs, not by testing.
@@ -138,7 +140,7 @@ Needs a free USAJOBS developer key, a Gemini API key, and a Discord webhook. The
 ## Known limitations
 
 - **Two deployments run as forked copies rather than config profiles.** A second instance monitors a different keyword and location set, which means maintaining two divergent copies of one file. Moving source lists, weights, geography and profile into per-profile config is the next planned change.
-- **No test suite.** `score_tracks`, `track_of`, `loc_ok`, `too_old`, `fed_reject` and `hard_gate` all run without a network connection and are the obvious first targets.
+- **The gate is tested; the rest is not.** `hard_gate` has 14 tests, including regressions for both bugs above. `job_alert.py` executes at module level, so its scoring and filter functions cannot be imported without running the whole bot. Extracting them behind a `main()` guard is the prerequisite for testing them.
 - **Keyword weights were tuned by hand** against observed results, not measured against a labeled set.
 - **Track calibration is unverified.** Descriptions are discarded before state is saved, so the AI/OPS distribution can't be recomputed from history — only watched run by run.
 - **Exceptions are caught broadly per source** so one failing endpoint can't kill a run. The cost is that a source silently returning nothing looks much like a source that is genuinely empty.
