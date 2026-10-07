@@ -159,10 +159,21 @@ python job_alert.py
 
 Needs a free USAJOBS developer key, a Gemini API key, and a Discord webhook. The first run seeds state and sends one summary rather than alerting on every existing posting.
 
+## Tests
+
+43 tests, run on every push. `hard_gate` has 14, including regressions for both
+bugs above. The rest cover `filters.py`: the location allowlist, the two-track
+score, federal public-eligibility, and the age check.
+
+The scoring tests compare the two tracks to each other rather than to fixed
+numbers. Both tracks receive the same broad-term and federal-series points, so
+their difference isolates the AI/OPS contribution - which keeps the tests
+meaningful when the keyword lists are retuned, which happens often.
+
 ## Known limitations
 
 - **Two deployments run as forked copies rather than config profiles.** A second instance monitors a different keyword and location set, which means maintaining two divergent copies of one file. Moving source lists, weights, geography and profile into per-profile config is the next planned change.
-- **The gate is tested; the rest is not.** `hard_gate` has 14 tests, including regressions for both bugs above. `job_alert.py` executes at module level, so its scoring and filter functions cannot be imported without running the whole bot. Extracting them behind a `main()` guard is the prerequisite for testing them.
+- **The metro allowlist matches by substring, so `Newark, CA` and `Garden City, KS` pass.** The city check runs before the non-metro rejection, so a city name that exists in two states resolves to the wrong one. The fix is to reject a non-NY/NJ state before testing city names at all - the same ordering lesson as the `, ny` wildcard, one layer down. Known, not yet fixed.
 - **Keyword weights were tuned by hand** against observed results, not measured against a labeled set.
 - **Track calibration is unverified.** Descriptions are discarded before state is saved, so the AI/OPS distribution can't be recomputed from history — only watched run by run.
 - **Exceptions are caught broadly per source** so one failing endpoint can't kill a run. The cost is that a source silently returning nothing looks much like a source that is genuinely empty.
