@@ -88,7 +88,7 @@ Rate limiting is a separate problem with a separate fix: calls are spaced 5 seco
 
 Without that rule the screen rejects nearly everything, because almost every posting lists something the candidate doesn't have. With it, the question becomes whether the posting treats that thing as a wall or a wish.
 
-## Two bugs the rejection reasons exposed
+## What the rejection reasons exposed
 
 Neither was found by testing. Both were found by reading output that already existed.
 
@@ -111,6 +111,28 @@ The stack pattern matched `\bgo\b` and the requirement pattern included `deep`, 
 Federal postings list a doctorate as one qualifying path among several in the education-substitution block, not as a requirement. The pattern matched the bare mention. Those were on-target roles being dropped before they were ever scored. Fixed by requiring requirement-framing near the degree — the same discipline `STACK_NO` already used, which the degree patterns had simply never been held to.
 
 A silent filter would have hidden both of these indefinitely.
+
+## The same bug keeps coming back
+
+Four times now a rule has matched text it was never meant to match:
+
+| Pattern | What it also matched | Cost |
+|---|---|---|
+| `cto` | "dire**cto**r" | every Director role, silently |
+| `\bgo\b` near requirement words | "go deep" | a Security Risk Analyst posting |
+| `ph.d` | an education-substitution line | four federal roles in one run |
+| `, ny` | the entire state | a posting four hours away |
+
+Three surfaced from rejection reasons. The fourth surfaced from noticing that no
+Director role had ever appeared, which took considerably longer.
+
+The repair was the same shape each time: require a word boundary, require
+requirement framing, replace a blocklist with an allowlist. The lesson is that
+the near set is usually small and bounded while the far set never is - so an
+allowlist of what counts beats a blocklist of what doesn't.
+
+A filter built on substrings will keep doing this. Printing the reason is what
+makes that survivable.
 
 ## Other design notes
 
