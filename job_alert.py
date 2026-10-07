@@ -49,6 +49,13 @@ DISQUALIFY = ["accountant","accounting","counsel","attorney","sales","designer",
 
 NYNJ = ["new york","new jersey","newark","jersey city","manhattan","brooklyn",
     ", ny",", nj","nyc"]
+
+# ", ny" matches the whole state, so Albany and Buffalo were passing as
+# NYC metro. Checked BEFORE the include list, which returns early.
+NY_TOO_FAR = ["albany","buffalo","rochester","syracuse","ithaca",
+    "binghamton","utica","schenectady","troy, ny","niagara","watertown",
+    "plattsburgh","elmira","corning","oswego","batavia","jamestown",
+    "olean","saratoga","upstate","western new york"]
 FOREIGN = ["india","brussels","tokyo","japan","seoul","korea","dublin","ireland",
     "singapore","germany","brazil","canada","toronto","ottawa","montreal",
     "vancouver","waterloo","london"," uk ","australia","sydney","france","paris",
@@ -140,6 +147,7 @@ def score(job):
 def loc_ok(job):
     l = (job.location or "").lower()
     if any(f in l for f in FOREIGN): return False
+    if any(x in l for x in NY_TOO_FAR): return False
     if any(t in l for t in NYNJ): return True
     if "remote" in l: return True
     if any(c in l for c in NON_NYNJ_US): return False
